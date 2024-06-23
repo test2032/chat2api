@@ -10,20 +10,20 @@ from starlette.concurrency import run_in_threadpool
 
 from api.files import get_image_size, get_file_extension, determine_file_use_case
 from api.models import model_proxy
+from chatgpt.authorization import get_req_token, verify_token
 from chatgpt.chatFormat import api_messages_to_chat, stream_response, wss_stream_response, format_not_stream_response
 from chatgpt.chatLimit import check_is_limit, handle_request_limit
 from chatgpt.proofofWork import get_config, get_dpl, get_answer_token, get_requirements_token
 from chatgpt.wssClient import token2wss, set_wss
 from utils.Client import Client
 from utils.Logger import logger
-from utils.authorization import verify_token, get_req_token
 from utils.config import proxy_url_list, chatgpt_base_url_list, arkose_token_url_list, history_disabled, pow_difficulty, \
     conversation_only, enable_limit, upload_by_url, check_model, auth_key
 
 
 class ChatService:
     def __init__(self, origin_token=None):
-        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0"
+        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0"
         self.req_token = get_req_token(origin_token)
         self.chat_token = "gAAAAAB"
         self.s = None
@@ -31,6 +31,7 @@ class ChatService:
 
     async def set_dynamic_data(self, data):
         if self.req_token:
+            logger.info(f"Request token: {self.req_token}")
             req_len = len(self.req_token.split(","))
             if req_len == 1:
                 self.access_token = await verify_token(self.req_token)
@@ -39,6 +40,7 @@ class ChatService:
                 self.access_token = await verify_token(self.req_token.split(",")[0])
                 self.account_id = self.req_token.split(",")[1]
         else:
+            logger.info("Request token is empty, use no-auth 3.5")
             self.access_token = None
             self.account_id = None
 
@@ -183,11 +185,13 @@ class ChatService:
                 # turnstile = resp.get('turnstile', {})
                 # turnstile_required = turnstile.get('required')
                 # if turnstile_required:
+                #     logger.info("Turnstile required: ignore")
                 #     raise HTTPException(status_code=403, detail="Turnstile required")
 
                 arkose = resp.get('arkose', {})
                 arkose_required = arkose.get('required')
-                if arkose_required:
+                if arkose_required and self.persona != "chatgpt-freeaccount":
+                    # logger.info("Arkose required: ignore")
                     if not self.arkose_token_url:
                         raise HTTPException(status_code=403, detail="Arkose service required")
                     arkose_dx = arkose.get("dx")
@@ -439,9 +443,6 @@ class ChatService:
         file_extension = await get_file_extension(mime_type)
         file_name = f"{uuid.uuid4()}{file_extension}"
         use_case = await determine_file_use_case(mime_type)
-        if use_case == "ace_upload":
-            mime_type = ''
-            logger.error(f"Error file mime_type, change to None")
 
         file_id, upload_url = await self.get_upload_url(file_name, file_size, use_case)
         if file_id and upload_url:
@@ -454,7 +455,8 @@ class ChatService:
                         "size_bytes": file_size,
                         "mime_type": mime_type,
                         "width": width,
-                        "height": height
+                        "height": height,
+                        "use_case": use_case
                     }
                     logger.info(f"File_meta: {file_meta}")
                     return file_meta
